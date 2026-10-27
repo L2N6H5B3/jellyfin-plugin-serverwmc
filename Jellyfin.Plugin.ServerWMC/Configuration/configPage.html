@@ -44,24 +44,28 @@
             var ServerWMCConfig = {
                 pluginUniqueId: '1fc322a1-af2e-49a5-b2eb-a89b4240f700'
             };
-            $('#ServerWMCConfigurationPage').on('pageshow', function () {
+            // jellyfin-web 10.9+ no longer ships jQuery / jQuery Mobile, so use plain DOM calls
+            document.querySelector('#ServerWMCConfigurationPage').addEventListener('pageshow', function () {
+                Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(ServerWMCConfig.pluginUniqueId).then(function (config) {
-                    var page = $.mobile.activePage;
-                    $('#txtServerWMCIP', page).val(config.ServerIP).change();
-                    $('#txtServerWMCPort', page).val(config.ServerPort).change();
-                    $('#txtLinuxPath', page).val(config.LinuxPath).change();
+                    document.querySelector('#txtServerWMCIP').value = config.ServerIP;
+                    document.querySelector('#txtServerWMCPort').value = config.ServerPort;
+                    document.querySelector('#txtLinuxPath').value = config.LinuxPath;
+                    Dashboard.hideLoadingMsg();
                 });
             });
-            $('#ServerWMCConfigurationForm').on('submit', function () {
+            document.querySelector('#ServerWMCConfigurationForm').addEventListener('submit', function (e) {
+                e.preventDefault();
+                Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(ServerWMCConfig.pluginUniqueId).then(function (config) {
-                    var page = $.mobile.activePage;
-                    config.ServerIP = $('#txtServerWMCIP', page).val();
-                    config.ServerPort = $('#txtServerWMCPort', page).val();
-                    config.LinuxPath = $('#txtLinuxPath', page).val();
+                    config.ServerIP = document.querySelector('#txtServerWMCIP').value;
+                    config.ServerPort = parseInt(document.querySelector('#txtServerWMCPort').value, 10);
+                    config.LinuxPath = document.querySelector('#txtLinuxPath').value;
                     ApiClient.updatePluginConfiguration(ServerWMCConfig.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                     },
                     function (result) {
+                        Dashboard.hideLoadingMsg();
                         Dashboard.alert("Saving configuration failed.  Make sure ServerWMC is running, and Jellyfin can access the target IP and Port.");
                     });
                 });

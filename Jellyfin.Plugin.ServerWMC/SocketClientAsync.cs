@@ -97,10 +97,10 @@ namespace Jellyfin.Plugin.ServerWMC
 
                 return results.ToArray();
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 //Debug.WriteLine(e.ToString());
-                throw e;                            // rethrow to let mbs handle
+                throw;                            // rethrow to let mbs handle
             }
             finally
             {
@@ -155,11 +155,11 @@ namespace Jellyfin.Plugin.ServerWMC
                 //if (responses == null)   - just let throw error fail the method
                 //    throw new Exception("ServerWMC connection failed");
             }
-            catch  (Exception ex)
+            catch (Exception)
             {
                 _ipAddr = ipAddr;               // restore values if connection attempt through an exception
                 _remoteEP = remoteEP;
-                throw ex;
+                throw;
             }
         }
     }

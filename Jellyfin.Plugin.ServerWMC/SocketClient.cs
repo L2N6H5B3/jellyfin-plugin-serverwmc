@@ -103,7 +103,7 @@ namespace Jellyfin.Plugin.ServerWMC
             catch (Exception e)
             {
                 Console.WriteLine("SocketClient Error> " + e.ToString());
-                throw e;                            // let mbs core handle error
+                throw;                            // let mbs core handle error
             }
         }
         

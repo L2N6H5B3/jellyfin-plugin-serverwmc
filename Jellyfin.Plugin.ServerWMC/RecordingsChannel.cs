@@ -7,7 +7,6 @@ using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Channels;
 using MediaBrowser.Model.MediaInfo;
-using MediaBrowser.Controller.LiveTv;
 using System.Linq;
 using MediaBrowser.Common.Extensions;
 using MediaBrowser.Model.Dto;
@@ -19,11 +18,13 @@ namespace Jellyfin.Plugin.ServerWMC
 {
     public class RecordingsChannel : IChannel, IHasCacheKey, ISupportsDelete, ISupportsLatestMedia, ISupportsMediaProbe, IHasFolderAttributes, IRequiresMediaInfoCallback
     {
-        public ILiveTvManager _liveTvManager;
+        // injected directly instead of looked up through ILiveTvManager, which would be a circular dependency
+        // (ChannelManager -> IChannel -> ILiveTvManager -> IChannelManager)
+        private readonly WMCService _service;
 
-        public RecordingsChannel(ILiveTvManager liveTvManager)
+        public RecordingsChannel(WMCService service)
         {
-            _liveTvManager = liveTvManager;
+            _service = service;
         }
 
         public string Name
@@ -139,7 +140,7 @@ namespace Jellyfin.Plugin.ServerWMC
 
         private WMCService GetService()
         {
-            return _liveTvManager.Services.OfType<WMCService>().First();
+            return _service;
         }
 
         public bool CanDelete(BaseItem item)
@@ -156,7 +157,7 @@ namespace Jellyfin.Plugin.ServerWMC
         {
             var result = await GetChannelItems(new InternalChannelItemQuery(), i => true, cancellationToken).ConfigureAwait(false);
 
-            return result.Items.OrderByDescending(i => i.DateCreated ?? DateTimeOffset.MinValue);
+            return result.Items.OrderByDescending(i => i.DateCreated ?? DateTime.MinValue);
         }
 
         public Task<ChannelItemResult> GetChannelItems(InternalChannelItemQuery query, CancellationToken cancellationToken)
@@ -212,10 +213,8 @@ namespace Jellyfin.Plugin.ServerWMC
 
             var result = new ChannelItemResult()
             {
-                Items = new List<ChannelItemInfo>()
+                Items = allRecordings.Where(filter).Select(ConvertToChannelItem).ToList()
             };
-
-            result.Items.AddRange(allRecordings.Where(filter).Select(ConvertToChannelItem));
 
             return result;
         }
@@ -273,16 +272,17 @@ namespace Jellyfin.Plugin.ServerWMC
             var service = GetService();
 
             var allRecordings = await service.GetAllRecordingsAsync(cancellationToken).ConfigureAwait(false);
+            var items = new List<ChannelItemInfo>();
             var result = new ChannelItemResult()
             {
-                Items = new List<ChannelItemInfo>()
+                Items = items
             };
 
             var series = allRecordings
                 .Where(i => i.IsSeries)
                 .ToLookup(i => i.Name, StringComparer.OrdinalIgnoreCase);
 
-            result.Items.AddRange(series.OrderBy(i => i.Key).Select(i => new ChannelItemInfo
+            items.AddRange(series.OrderBy(i => i.Key).Select(i => new ChannelItemInfo
             {
                 Name = i.Key,
                 FolderType = ChannelFolderType.Container,
@@ -295,7 +295,7 @@ namespace Jellyfin.Plugin.ServerWMC
 
             if (kids != null)
             {
-                result.Items.Add(new ChannelItemInfo
+                items.Add(new ChannelItemInfo
                 {
                     Name = "Kids",
                     FolderType = ChannelFolderType.Container,
@@ -308,7 +308,7 @@ namespace Jellyfin.Plugin.ServerWMC
             var movies = allRecordings.FirstOrDefault(i => i.IsMovie);
             if (movies != null)
             {
-                result.Items.Add(new ChannelItemInfo
+                items.Add(new ChannelItemInfo
                 {
                     Name = "Movies",
                     FolderType = ChannelFolderType.Container,
@@ -321,7 +321,7 @@ namespace Jellyfin.Plugin.ServerWMC
             var news = allRecordings.FirstOrDefault(i => i.IsNews);
             if (news != null)
             {
-                result.Items.Add(new ChannelItemInfo
+                items.Add(new ChannelItemInfo
                 {
                     Name = "News",
                     FolderType = ChannelFolderType.Container,
@@ -334,7 +334,7 @@ namespace Jellyfin.Plugin.ServerWMC
             var sports = allRecordings.FirstOrDefault(i => i.IsSports);
             if (sports != null)
             {
-                result.Items.Add(new ChannelItemInfo
+                items.Add(new ChannelItemInfo
                 {
                     Name = "Sports",
                     FolderType = ChannelFolderType.Container,
@@ -347,7 +347,7 @@ namespace Jellyfin.Plugin.ServerWMC
             var other = allRecordings.FirstOrDefault(i => !i.IsSports && !i.IsNews && !i.IsMovie && !i.IsKids && !i.IsSeries);
             if (other != null)
             {
-                result.Items.Add(new ChannelItemInfo
+                items.Add(new ChannelItemInfo
                 {
                     Name = "Others",
                     FolderType = ChannelFolderType.Container,

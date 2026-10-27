@@ -10,11 +10,11 @@ using System.Threading;
 using System.Reflection;
 using Microsoft.Extensions.Logging;
 using MediaBrowser.Model.Entities;
-using MediaBrowser.Controller.Drawing;
 using MediaBrowser.Model.Dto;
 using System.Xml.Linq;
 using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Model.IO;
+using MediaBrowser.Model.Tasks;
 
 // to update package enter:
 //      Install-Package MediaBrowser.Server.Core
@@ -37,6 +37,7 @@ namespace Jellyfin.Plugin.ServerWMC
         string _serverWMC_version = "unknown";
         private int _serverWMC_build = 0;
         private readonly ILogger<WMCService> _logger;
+        private readonly ITaskManager _taskManager;
 
         private readonly string HTTP = @"http://";
 
@@ -58,10 +59,11 @@ namespace Jellyfin.Plugin.ServerWMC
         /// <summary>
         /// constructor
         /// </summary>
-        public WMCService(IFileSystem fileSystem, ILoggerFactory loggerFactory)
+        public WMCService(IFileSystem fileSystem, ILoggerFactory loggerFactory, ITaskManager taskManager)
         {
             Instance = this;
             _logger = loggerFactory.CreateLogger<WMCService>();    // start logger
+            _taskManager = taskManager;
             _clientVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString();
 
             SocketClientAsync.InitAddress(Plugin.Instance.Configuration.ServerIP, Plugin.Instance.Configuration.ServerPort);    // set ip and port
@@ -115,6 +117,7 @@ namespace Jellyfin.Plugin.ServerWMC
                                 if (statusResponses.Length > 2)
                                 {
                                     _recTVPath = statusResponses[2];        // store the recording tv path if we got one
+                                    CheckRecTVFolder(_recTVPath);
                                 }
                             }
                         }
@@ -334,7 +337,7 @@ namespace Jellyfin.Plugin.ServerWMC
                 if (message != null)
                     throw new Exception(message);
                 else if (results.Contains("30020"))                     // string ID '30020' => all tuners for this channel are busy
-                    throw new LiveTvConflictException();
+                    throw new LiveTvConflictException("ServerWMC: all tuners for this channel are busy");
                 else
                     throw new Exception("ServerWMC Backend error");
             }
@@ -721,31 +724,10 @@ namespace Jellyfin.Plugin.ServerWMC
             catch (Exception ex)
             {
                 _logger.LogError("[ServerWMC] GetChannelsAsync> " + ex);
-                throw ex;
+                throw;
             }
 
             return channels;
-        }
-
-        // not used
-        public Task<ImageStream> GetChannelImageAsync(string channelId, System.Threading.CancellationToken cancellationToken)
-        {
-            throw new NotImplementedException();
-
-        //    string[] responses = await _socketClient.GetVectorAsync(XferString("GetChannelImage", channelId));
-
-        //    if (!IsServerError(responses) && responses[0] != String.Empty)
-        //    {
-        //        var file = responses[0];
-        //        var extension = Path.GetExtension(file);
-
-        //        return new StreamResponseInfo
-        //        {
-        //            Stream = _fileSystem.GetFileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read),
-        //            MimeType = "image/" + extension
-        //        };
-        //    }
-        //    return null;
         }
 
         #endregion
@@ -958,7 +940,7 @@ namespace Jellyfin.Plugin.ServerWMC
             catch (Exception ex)
             {
                 _logger.LogError("[ServerWMC] GetTimersAsync> " + ex);
-                throw ex;
+                throw;
             }
 
 
@@ -1012,7 +994,7 @@ namespace Jellyfin.Plugin.ServerWMC
             catch (Exception ex)
             {
                 _logger.LogError("[ServerWMC] GetSeriesTimersAsync> " + ex);
-                throw ex;
+                throw;
             }
 
             return timers;
@@ -1210,11 +1192,6 @@ namespace Jellyfin.Plugin.ServerWMC
         }
 
 
-        public async Task<IEnumerable<RecordingInfo>> GetRecordingsAsync(System.Threading.CancellationToken cancellationToken)
-        {
-            return new List<RecordingInfo>();
-        }
-
         public async Task<IEnumerable<MyRecordingInfo>> GetAllRecordingsAsync(System.Threading.CancellationToken cancellationToken)
         {
             var recordings = new List<MyRecordingInfo>();
@@ -1312,16 +1289,10 @@ namespace Jellyfin.Plugin.ServerWMC
             catch (Exception ex)
             {
                 _logger.LogError("[ServerWMC] GetRecordingsAsync> " + ex.Message);
-                throw ex;
+                throw;
             }
 
             return recordings;
-        }
-
-        // this function not called since all recordinginfo has 'hasImage' set to false;
-        public Task<ImageStream> GetRecordingImageAsync(string recordingId, System.Threading.CancellationToken cancellationToken)
-        {
-            throw new NotImplementedException();
         }
         #endregion
 
@@ -1407,135 +1378,54 @@ namespace Jellyfin.Plugin.ServerWMC
             catch (Exception ex)
             {
                 _logger.LogError("[ServerWMC] GetProgramsAsync> " + ex.Message);
-                throw ex;
+                throw;
             }
 
             return programs;
-        }
-
-        // not called, since hasImage is set false on all program info
-        public Task<ImageStream> GetProgramImageAsync(string programId, string channelId, System.Threading.CancellationToken cancellationToken)
-        {
-            throw new NotImplementedException();
         }
 
         #endregion
 
         #region events
 
-        public event EventHandler DataSourceChanged;
+        /// <summary>
+        /// data source (ip/port) changed, queue jellyfin's guide refresh task so channels and epg are reloaded
+        /// (jellyfin 10.9+ no longer has the ILiveTvService.DataSourceChanged event)
+        /// </summary>
         static public void DataSourceChange()
         {
-            if (Instance != null && Instance.DataSourceChanged != null)
-                Instance.DataSourceChanged(Instance, EventArgs.Empty);
-        }
+            if (Instance == null)
+                return;
 
-        public event EventHandler<RecordingStatusChangedEventArgs> RecordingStatusChanged;
-        //static public void RecordingStatusChanged(RecordingStatusChangedEventArgs rArg)
-        //{
-        //    if (Instance != null && Instance.RecordingStatusChanged != null)
-        //    {
-        //        Instance.RecordingStatusChanged(Instance, null);
-        //    }
-        //}
+            var refreshGuide = Instance._taskManager.ScheduledTasks.FirstOrDefault(t => t.ScheduledTask.Key == "RefreshGuide");
+            if (refreshGuide != null)
+                Instance._taskManager.QueueScheduledTask(refreshGuide.ScheduledTask, new TaskOptions());
+            else
+                Instance._logger.LogWarning("[ServerWMC] RefreshGuide task not found, guide will update on next scheduled refresh");
+        }
         #endregion
 
         #region tuners & status
-        public async Task<LiveTvServiceStatusInfo> GetStatusInfoAsync(CancellationToken cancellationToken)
+
+        /// <summary>
+        /// log a warning if the rec tv folder sent by serverwmc is not accessible from this jellyfin server
+        /// (jellyfin 10.9+ removed GetStatusInfoAsync, which used to show this on the live tv status page)
+        /// recTvPath will be empty string if urls are being used, in which case there is no folder to check
+        /// </summary>
+        private void CheckRecTVFolder(string recTvPath)
         {
-            bool serverDown = await isServerDown(cancellationToken);
-            bool isRecFolderFound = false;
-            string recTvPath = null;
+            if (string.IsNullOrEmpty(recTvPath) || Directory.Exists(TVPath(recTvPath)))
+                return;
 
-            string status = serverDown ? "ServerWMC not connected" : string.Format("ServerWMC({0}) is Up", _serverWMC_version);
-
-            if (!serverDown)    // if server is not down, check the server version again
-            {
-                string[] responses = await SocketClientAsync.GetVectorAsync("GetServerVersion", cancellationToken);
-                _serverWMC_version = responses[0];              // get version string
-                _serverWMC_build = int.Parse(responses[1]);     // get build number
-                if (responses.Length > 2)
-                {
-                    recTvPath = responses[2];                   // store the recording tv path if we got one
-                    _recTVPath = recTvPath;
-                }
-            }
-
-            // check if the REQUIRED verson of swmc is not running
-            if (!serverDown && !IsServerVersionOK)
-                status = "This plugin requires the newest version of ServerWMC, please update";
-
-            #region get the tuner status
-            var tunerInfoList = new List<LiveTvTunerInfo>();
-            try
-            {
-                if (!serverDown && IsServerVersionOK)
-                {
-                    string[] responses = await SocketClientAsync.GetVectorAsync("GetTunerStatus", cancellationToken);
-
-                    if (!IsServerError(responses))
-                    {
-                        foreach (string response in responses)
-                        {
-                            var v = response.Split('|');				// split to unpack string
-
-                            LiveTvTunerInfo tInfo = new LiveTvTunerInfo();
-                            tInfo.Name = v[0];
-                            tInfo.Id = v[1];
-                            tInfo.SourceType = v[2];
-                            tInfo.Status = (LiveTvTunerStatus)Enum.Parse(typeof(LiveTvTunerStatus), v[3]);
-                            tInfo.ProgramName = v[4];
-                            tInfo.RecordingId = v[5];
-                            tInfo.ChannelId = v[6];
-                            tInfo.Clients = v[7].Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).ToList();
-
-                            tunerInfoList.Add(tInfo);
-
-                            //if (tInfo.Status == LiveTvTunerStatus.LiveTv)  // test stream record
-                            //    await RecordLiveStream((_idStreamInt-1).ToString(), CancellationToken.None);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("[ServerWMC] GetStatusInfoAsync::TunerStatus> " + ex.Message);
-                throw ex;
-            }
-            #endregion
-
-            // if we received a path to the recTV folder from the server, check it here to make sure its accessible
-            // recTvPath will be empty string if urls are being used
-            if (!string.IsNullOrEmpty(recTvPath))
-            {
-                if (Directory.Exists(TVPath(recTvPath)))
-                    isRecFolderFound = true;
+            if (recTvPath.StartsWith(@"\\"))
+                _logger.LogWarning("[ServerWMC] Recorded TV folder '{0}' not accessible.  Please make sure the Recorded TV folder used by WMC for new recordings is a shared folder.  Once done, the network path to this folder must be set in ServerWMC (see 'Folders' tab in ServerWMC).", recTvPath);
+            else if (Environment.OSVersion.Platform == PlatformID.Unix)
+                if (string.IsNullOrEmpty(_linuxPath))
+                    _logger.LogWarning("[ServerWMC] Linux path to Recorded TV folder is not set in configuration.");
                 else
-                {
-                    if (recTvPath.StartsWith(@"\\"))
-                        status = string.Format("Recorded TV folder ‘{0}’ not accessible.  Please make sure the Recorded TV folder used by WMC for new recordings is a shared folder.  Once done, the network path to this folder must be set in ServerWMC (see ‘Folders’ tab in ServerWMC).", recTvPath);
-                    else if (Environment.OSVersion.Platform == PlatformID.Unix)
-                        if (string.IsNullOrEmpty(_linuxPath))
-                            status = string.Format("Linux path to Recorded TV folder is not set in configuration.");
-                        else
-                            status = string.Format("Linux path to Recorded TV folder ‘{0}’ failed.", _linuxPath);
-                    else
-                        status = string.Format("Recorded TV folder ‘{0}’ not accessible", recTvPath);
-                }
-            }
-            else if (recTvPath == "")       // if recTvPath was returned empty, we are return url addresses, so there is no rec tv folder to check
-            {
-                isRecFolderFound = true;    // folder does not effect status
-            }
-
-            return new LiveTvServiceStatusInfo
-            {
-                StatusMessage = status,                     // status error is only shown in jellyfin server if 'Unavailable' is set below
-                Version = _serverWMC_version,
-                HasUpdateAvailable = !IsServerUpTodate,     // true if an update is available
-                Status = (serverDown || !IsServerVersionOK || !isRecFolderFound) ? LiveTvServiceStatus.Unavailable : LiveTvServiceStatus.Ok,
-                Tuners = tunerInfoList
-            };
+                    _logger.LogWarning("[ServerWMC] Linux path to Recorded TV folder '{0}' failed.", _linuxPath);
+            else
+                _logger.LogWarning("[ServerWMC] Recorded TV folder '{0}' not accessible", recTvPath);
         }
 
         public async Task ResetTuner(string id, CancellationToken cancellationToken)
@@ -1578,11 +1468,6 @@ namespace Jellyfin.Plugin.ServerWMC
             throw new NotImplementedException();
         }
 
-
-        public async Task<List<MediaSourceInfo>> GetRecordingStreamMediaSources(string recordingId, CancellationToken cancellationToken)
-        {
-            throw new NotImplementedException();
-        }
 
         // based on: https://github.com/MediaBrowser/Emby/blob/dev/MediaBrowser.Server.Implementations/LiveTv/TunerHosts/HdHomerun/HdHomerunHost.cs#L229-L371
         private MediaSourceInfo GetMediaSource(string profile)
