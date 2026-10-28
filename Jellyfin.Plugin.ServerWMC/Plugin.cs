@@ -16,6 +16,7 @@ namespace Jellyfin.Plugin.ServerWMC
         public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer) : base(applicationPaths, xmlSerializer)
         {
             Instance = this;
+            WMCService.Instance?.Initialize();      // service was created before the plugin, now that config is available finish its setup
         }
 
         public static Plugin Instance { get; private set; }

@@ -65,28 +65,56 @@ namespace Jellyfin.Plugin.ServerWMC
             _logger = loggerFactory.CreateLogger<WMCService>();    // start logger
             _taskManager = taskManager;
             _clientVersion = Assembly.GetExecutingAssembly().GetName().Version.ToString();
+            _fileSystem = fileSystem;   // for file access, not used currently
 
-            SocketClientAsync.InitAddress(Plugin.Instance.Configuration.ServerIP, Plugin.Instance.Configuration.ServerPort);    // set ip and port
-            _logger.LogInformation("[ServerWMC] Config IP: {0} ({1}), Config Port: {2}",
-                                            Plugin.Instance.Configuration.ServerIP,
-                                            SocketClientAsync.IpAddr,
-                                            Plugin.Instance.Configuration.ServerPort);
+            // jellyfin resolves this service (via IChannelManager) before it creates plugin instances, so the plugin
+            // configuration is usually not available yet; in that case Plugin's constructor calls Initialize() instead
+            if (Plugin.Instance != null)
+                Initialize();
+        }
 
-            //Thread.Sleep(20000);
+        private readonly object _initLock = new object();
+        private bool _initialized = false;
+
+        /// <summary>
+        /// read the plugin configuration and start talking to serverwmc, safe to call more than once
+        /// </summary>
+        public void Initialize()
+        {
+            lock (_initLock)
+            {
+                if (_initialized || Plugin.Instance == null)
+                    return;
+                _initialized = true;
+            }
+
+            try
+            {
+                SocketClientAsync.InitAddress(Plugin.Instance.Configuration.ServerIP, Plugin.Instance.Configuration.ServerPort);    // set ip and port
+                _logger.LogInformation("[ServerWMC] Config IP: {0} ({1}), Config Port: {2}",
+                                                Plugin.Instance.Configuration.ServerIP,
+                                                SocketClientAsync.IpAddr,
+                                                Plugin.Instance.Configuration.ServerPort);
+            }
+            catch (Exception ex)    // don't take down jellyfin startup because the configured address can't be resolved
+            {
+                _logger.LogError(ex, "[ServerWMC] Unable to resolve ServerWMC address '{0}', check the plugin configuration", Plugin.Instance.Configuration.ServerIP);
+            }
 
             _linuxPath = Plugin.Instance.Configuration.LinuxPath;
 
-            // read newest serverwmc build from autoupdate site
-            var newBuild = GetNewestSWMCBuild();
-            if (newBuild == 0)
-                _logger.LogInformation("[ServerWMC] Using last hardcoded build value: " + _newestBuild);
-            else
+            // read newest serverwmc build from autoupdate site, in the background so a slow/missing internet connection doesn't stall startup
+            Task.Run(() =>
             {
-                _newestBuild = newBuild;
-                _logger.LogInformation("[ServerWMC] Newest ServerWMC build value found: " + _newestBuild);
-            }
-
-            _fileSystem = fileSystem;   // for file access, not used currently
+                var newBuild = GetNewestSWMCBuild();
+                if (newBuild == 0)
+                    _logger.LogInformation("[ServerWMC] Using last hardcoded build value: " + _newestBuild);
+                else
+                {
+                    _newestBuild = newBuild;
+                    _logger.LogInformation("[ServerWMC] Newest ServerWMC build value found: " + _newestBuild);
+                }
+            });
 
             // timer to signal server that jellyfin server is alive, this is needed because serverwmc needs to get be polled by the client
             // occasionally to know that its still alive
@@ -257,7 +285,7 @@ namespace Jellyfin.Plugin.ServerWMC
         /// </summary>
         public void Dispose()
         {
-            _recTimer.Dispose();
+            _recTimer?.Dispose();
             AddonGoingDown();
         }
 
